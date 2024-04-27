@@ -50,12 +50,13 @@ jobs:
         python.version: '3.9'
       Python310:
         python.version: '3.10'
-      # Note for Python 3.11. This will raise hundres of warnings on a third party module
-      # pytest_nunit/nunit.py
-      # DeprecationWarning: Use setlocale(), getencoding() and getlocale() instead
-      # This is the current behavior on the latest 1.0.3 version of this module.
+      Python311:
+        python.version: '3.11'
 
-    maxParallel: 3
+    maxParallel: 4
+
+  variables:
+    group: sg-credentials
 
   # These are the steps that will be executed inside each job.
   steps:
@@ -98,7 +99,7 @@ jobs:
       pytest -v --cov shotgun_api3 --cov-report xml --test-run-title="${{parameters.name}}-$(python.version)"
     displayName: Running tests
     env:
-      # Pass the values needed to authenticate with the Shotgun site and create some entities.
+      # Pass the values needed to authenticate with the Flow Production Tracking site and create some entities.
       # Remember, on a pull request from a client or on forked repos, those variables
       # will be empty!
       SG_SERVER_URL: $(ci_site)

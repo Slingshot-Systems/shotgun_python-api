@@ -1,8 +1,36 @@
-*****************************
-ShotGrid Python API Changelog
-*****************************
+*********************************************
+Flow Production Tracking Python API Changelog
+*********************************************
 
 Here you can see the full list of changes between each Python API release.
+
+v3.5.1 (2024 Apr 3)
+===================
+- Documentation: Revert to Shotgun in the API Reference headers to keep consistency with the API methods
+- Mockgun: fix entity data type
+- Mockgun: add support for ``add_user_agent`` and ``set_session_uuid`` methods
+
+v3.5.0 (2024 Mar 26)
+===================
+- Rebranding component for Flow Production Tracking
+
+v3.4.2 (2024 Feb 6)
+===================
+- Add support for Python 3.11
+
+v3.4.1 (2024 Jan 29)
+====================
+- Flaky Tests
+- Documentation: Fix issue regarding "in" filter prototype 
+- Documentation: Travis badge image is no working anymore
+- Documentation: Add ``user_subscription_read`` and ``user_subscription_create`` methods
+- Update Python Certifi license block
+- Add methods for the user_subscriptions API end points
+- Retry ShotGrid request also on error 504
+- Retry S3 uploads on error 500
+- Comment typing annotation breaks Python 2 compatibility
+- Add field type ``entity_type`` to mockgun
+
 
 v3.4.0 (2023 Sep 22)
 ====================
@@ -155,7 +183,7 @@ v3.0.32 (2016 Sep 22)
 
 - Optimized import speed of the API on Python 2.7.
 - Integrated the latest fixes to the ``mimetypes`` module.
-- Added ``nav_expand()`` method as an experimental, internal method for querying SG hierarchy. 
+- Added ``nav_expand()`` method as an experimental, internal method for querying SG hierarchy.
 - Ported all documentation to sphinx. See http://developer.shotgridsoftware.com/python-api.
 - Moved Changelog to dedicated HISTORY file.
 
