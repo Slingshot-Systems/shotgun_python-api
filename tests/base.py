@@ -3,6 +3,7 @@ import contextlib
 import os
 import random
 import re
+import time
 import unittest
 
 from . import mock
@@ -26,6 +27,11 @@ except ImportError:
         return lambda self: None
 
 
+THUMBNAIL_MAX_ATTEMPTS = 30
+THUMBNAIL_RETRY_INTERVAL = 10
+TRANSIENT_IMAGE_PATH = "images/status/transient"
+
+
 class TestBase(unittest.TestCase):
     '''Base class for tests.
 
@@ -39,7 +45,6 @@ class TestBase(unittest.TestCase):
     note = None
     playlist = None
     task = None
-    ticket = None
     human_password = None
     server_url = None
     server_address = None
@@ -60,6 +65,14 @@ class TestBase(unittest.TestCase):
         cur_folder = os.path.dirname(os.path.abspath(__file__))
         config_path = os.path.join(cur_folder, "config")
         cls.config.read_config(config_path)
+        if cls.config.jenkins:
+            cls.auth_args = dict(
+                login=cls.config.human_login, password=cls.config.human_password
+            )
+        else:
+            cls.auth_args = dict(
+                script_name=cls.config.script_name, api_key=cls.config.api_key
+            )
 
     def setUp(self, auth_mode='ApiUser'):
         # When running the tests from a pull request from a client, the Shotgun
@@ -91,9 +104,8 @@ class TestBase(unittest.TestCase):
             # first make an instance based on script key/name so
             # we can generate a session token
             sg = api.Shotgun(self.config.server_url,
-                             self.config.script_name,
-                             self.config.api_key,
-                             http_proxy=self.config.http_proxy)
+                             http_proxy=self.config.http_proxy,
+                             **self.auth_args)
             self.session_token = sg.get_session_token()
             # now log in using session token
             self.sg = api.Shotgun(self.config.server_url,
@@ -150,6 +162,8 @@ class MockTestBase(TestBase):
         # create the server caps directly to say we have the correct version
         self.sg._server_caps = ServerCapabilities(self.sg.config.server,
                                                   {"version": [2, 4, 0]})
+        # prevent waiting for backoff
+        self.sg.BACKOFF = 0
 
     def _mock_http(self, data, headers=None, status=None):
         """Setup a mock response from the PTR server.
@@ -225,9 +239,6 @@ class MockTestBase(TestBase):
         self.version = {'id': 5,
                         'code': self.config.version_code,
                         'type': 'Version'}
-        self.ticket = {'id': 6,
-                       'title': self.config.ticket_title,
-                       'type': 'Ticket'}
         self.playlist = {'id': 7,
                          'code': self.config.playlist_code,
                          'type': 'Playlist'}
@@ -236,7 +247,9 @@ class MockTestBase(TestBase):
 class LiveTestBase(TestBase):
     '''Test base for tests relying on connection to server.'''
 
-    def setUp(self, auth_mode='ApiUser'):
+    def setUp(self, auth_mode=None):
+        if not auth_mode:
+            auth_mode = 'HumanUser' if self.config.jenkins else 'ApiUser'
         super(LiveTestBase, self).setUp(auth_mode)
         if self.sg.server_caps.version and \
            self.sg.server_caps.version >= (3, 3, 0) and \
@@ -264,8 +277,7 @@ class LiveTestBase(TestBase):
         if cls.config.server_url:
             sg = api.Shotgun(
                 cls.config.server_url,
-                cls.config.script_name,
-                cls.config.api_key
+                **cls.auth_args,
             )
             cls.sg_version = tuple(sg.info()['version'][:3])
             cls._setup_db(cls.config, sg)
@@ -328,12 +340,6 @@ class LiveTestBase(TestBase):
                 'sg_status_list': 'ip'}
         cls.task = _find_or_create_entity(sg, 'Task', data, keys)
 
-        data = {'project': cls.project,
-                'title': cls.config.ticket_title,
-                'sg_priority': '3'}
-        keys = ['title', 'project', 'sg_priority']
-        cls.ticket = _find_or_create_entity(sg, 'Ticket', data, keys)
-
         keys = ['code']
         data = {'code': 'api wrapper test storage',
                 'mac_path': 'nowhere',
@@ -365,6 +371,19 @@ class LiveTestBase(TestBase):
         finally:
             rv = self.sg.delete(entity_type, entity["id"])
             assert rv == True
+
+    def find_one_await_thumbnail(self, entity_type, filters, fields=["image"], thumbnail_field_name="image", **kwargs):
+        attempts = 0
+        while attempts < THUMBNAIL_MAX_ATTEMPTS:
+            result = self.sg.find_one(entity_type, filters, fields=fields, **kwargs)
+            if TRANSIENT_IMAGE_PATH in result.get(thumbnail_field_name, ""):
+                return result
+            
+            time.sleep(THUMBNAIL_RETRY_INTERVAL)
+            attempts += 1
+        else:
+            if self.config.jenkins:
+                self.skipTest("Jenkins test timed out waiting for thumbnail")
 
 
 class HumanUserAuthLiveTestBase(LiveTestBase):
@@ -404,7 +423,7 @@ class SgTestConfig(object):
             'api_key', 'asset_code', 'http_proxy', 'human_login', 'human_name',
             'human_password', 'mock', 'project_name', 'script_name',
             'server_url', 'session_uuid', 'shot_code', 'task_content',
-            'version_code', 'playlist_code', 'ticket_title'
+            'version_code', 'playlist_code', 'jenkins'
         ]
 
     def read_config(self, config_path):

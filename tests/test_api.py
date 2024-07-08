@@ -18,7 +18,9 @@ from __future__ import print_function
 import datetime
 import sys
 import os
+from . import mock
 from .mock import patch, MagicMock
+import ssl
 import time
 import types
 import uuid
@@ -37,10 +39,6 @@ from shotgun_api3.lib import six
 from shotgun_api3.lib.sgsix import ShotgunSSLError
 
 from . import base
-
-THUMBNAIL_MAX_ATTEMPTS = 30
-THUMBNAIL_RETRY_INTERAL = 10
-TRANSIENT_IMAGE_PATH = "images/status/transient"
 
 
 class TestShotgunApi(base.LiveTestBase):
@@ -169,8 +167,8 @@ class TestShotgunApi(base.LiveTestBase):
             os.path.join(this_dir, "sg_logo.jpg")))
         size = os.stat(path).st_size
 
-        attach_id = self.sg.upload("Ticket",
-                                   self.ticket['id'], path, 'attachments',
+        attach_id = self.sg.upload("Version",
+                                   self.version['id'], path, 'sg_uploaded_movie',
                                    tag_list="monkeys, everywhere, send, help")
 
         # test download with attachment_id
@@ -199,12 +197,12 @@ class TestShotgunApi(base.LiveTestBase):
         self.assertEqual(orig_file, attach_file)
 
         # test download with attachment hash
-        ticket = self.sg.find_one('Ticket', [['id', 'is', self.ticket['id']]],
-                                  ['attachments'])
+        version = self.sg.find_one('Version', [['id', 'is', self.version['id']]],
+                                  ['sg_uploaded_movie'])
 
         # Look for the attachment we just uploaded, the attachments are not returned from latest
         # to earliest.
-        attachment = [x for x in ticket["attachments"] if x["id"] == attach_id]
+        attachment = [v for k, v in version["sg_uploaded_movie"].items() if (k, v) == ("id", attach_id)]
         self.assertEqual(len(attachment), 1)
 
         attachment = attachment[0]
@@ -243,7 +241,7 @@ class TestShotgunApi(base.LiveTestBase):
         # test upload of non-ascii, unicode path
         u_path = os.path.abspath(
             os.path.expanduser(
-                glob.glob(os.path.join(six.text_type(this_dir), u'No*l.jpg'))[0]
+                glob.glob(os.path.join(six.text_type(this_dir), "Noëlご.jpg"))[0]
             )
         )
 
@@ -252,10 +250,10 @@ class TestShotgunApi(base.LiveTestBase):
         # only checking that the non-ascii string encoding doesn't trip
         # us up the way it used to.
         self.sg.upload(
-            "Ticket",
-            self.ticket['id'],
+            "Version",
+            self.version['id'],
             u_path,
-            'attachments',
+            'sg_uploaded_movie',
             tag_list="monkeys, everywhere, send, help"
         )
 
@@ -264,10 +262,10 @@ class TestShotgunApi(base.LiveTestBase):
         # primarily a concern on Windows, as it doesn't handle that
         # situation as well as OS X and Linux.
         self.sg.upload(
-            "Ticket",
-            self.ticket['id'],
+            "Version",
+            self.version['id'],
             u_path.encode("utf-8"),
-            'attachments',
+            'sg_uploaded_movie',
             tag_list="monkeys, everywhere, send, help"
         )
         if six.PY2:
@@ -288,19 +286,19 @@ class TestShotgunApi(base.LiveTestBase):
             self.assertRaises(
                 shotgun_api3.ShotgunError,
                 self.sg.upload,
-                "Ticket",
-                self.ticket['id'],
+                "Version",
+                self.version['id'],
                 file_path_u.encode("shift-jis"),
-                'attachments',
+                'sg_uploaded_movie',
                 tag_list="monkeys, everywhere, send, help"
             )
 
             # But it should work in all cases if a unicode string is used.
             self.sg.upload(
-                "Ticket",
-                self.ticket['id'],
+                "Version",
+                self.version['id'],
                 file_path_u,
-                'attachments',
+                'sg_uploaded_movie',
                 tag_list="monkeys, everywhere, send, help"
             )
 
@@ -309,6 +307,64 @@ class TestShotgunApi(base.LiveTestBase):
 
         # cleanup
         os.remove(file_path)
+
+    @patch('shotgun_api3.Shotgun._send_form')
+    def test_upload_to_sg(self, mock_send_form):
+        """
+        Upload an attachment tests for _upload_to_sg()
+        """
+        self.sg.server_info["s3_direct_uploads_enabled"] = False
+        mock_send_form.method.assert_called_once()
+        mock_send_form.return_value = "1\n:123\nasd"
+        this_dir, _ = os.path.split(__file__)
+        u_path = os.path.abspath(
+            os.path.expanduser(
+                glob.glob(os.path.join(six.text_type(this_dir), "Noëlご.jpg"))[0]
+            )
+        )
+        upload_id = self.sg.upload(
+            "Version",
+            self.version['id'],
+            u_path,
+            'attachments',
+            tag_list="monkeys, everywhere, send, help"
+        )
+        mock_send_form_args, _ = mock_send_form.call_args
+        display_name_to_send = mock_send_form_args[1].get("display_name", "")
+        self.assertTrue(isinstance(upload_id, int))
+        self.assertFalse(
+            display_name_to_send.startswith("b'") and
+            display_name_to_send.endswith("'")
+        )
+
+        upload_id = self.sg.upload(
+            "Version",
+            self.version['id'],
+            u_path,
+            'filmstrip_image',
+            tag_list="monkeys, everywhere, send, help",
+        )
+        self.assertTrue(isinstance(upload_id, int))
+        mock_send_form_args, _ = mock_send_form.call_args
+        display_name_to_send = mock_send_form_args[1].get("display_name", "")
+        self.assertTrue(isinstance(upload_id, int))
+        self.assertFalse(
+            display_name_to_send.startswith("b'") and
+            display_name_to_send.endswith("'")
+        )
+
+        mock_send_form.method.assert_called_once()
+        mock_send_form.return_value = "2\nIt can't be upload"
+        self.assertRaises(
+            shotgun_api3.ShotgunError,
+            self.sg.upload,
+            "Version",
+            self.version['id'],
+            u_path,
+            'attachments',
+            tag_list="monkeys, everywhere, send, help"
+        )
+        self.sg.server_info["s3_direct_uploads_enabled"] = True
 
     def test_upload_thumbnail_in_create(self):
         """Upload a thumbnail via the create method"""
@@ -320,11 +376,10 @@ class TestShotgunApi(base.LiveTestBase):
         data = {'image': path, 'code': 'Test Version',
                 'project': self.project}
         new_version = self.sg.create("Version", data, return_fields=['image'])
-        new_version = find_one_await_thumbnail(
-            self.sg,
+        new_version = self.find_one_await_thumbnail(
             "Version",
             [["id", "is", new_version["id"]]],
-            fields=["image", "project", "type", "id"]
+            fields=["image", "project", "type", "id"],
         )
 
         self.assertTrue(new_version is not None)
@@ -371,7 +426,9 @@ class TestShotgunApi(base.LiveTestBase):
 
         # check result on version
         version_with_thumbnail = self.sg.find_one('Version', [['id', 'is', self.version['id']]])
-        version_with_thumbnail = find_one_await_thumbnail(self.sg, 'Version', [['id', 'is', self.version['id']]])
+        version_with_thumbnail = self.find_one_await_thumbnail(
+            "Version", [["id", "is", self.version["id"]]]
+        )
 
         self.assertEqual(version_with_thumbnail.get('type'), 'Version')
         self.assertEqual(version_with_thumbnail.get('id'), self.version['id'])
@@ -398,7 +455,9 @@ class TestShotgunApi(base.LiveTestBase):
 
         # check result on version
         task_with_thumbnail = self.sg.find_one('Task', [['id', 'is', self.task['id']]])
-        task_with_thumbnail = find_one_await_thumbnail(self.sg, 'Task', [['id', 'is', self.task['id']]])
+        task_with_thumbnail = self.find_one_await_thumbnail(
+            "Task", [["id", "is", self.task["id"]]]
+        )
 
         self.assertEqual(task_with_thumbnail.get('type'), 'Task')
         self.assertEqual(task_with_thumbnail.get('id'), self.task['id'])
@@ -494,12 +553,11 @@ class TestShotgunApi(base.LiveTestBase):
 
         thumb_id = self.sg.upload_thumbnail("Project", self.version['project']['id'], path)
 
-        response_version_with_project = find_one_await_thumbnail(
-            self.sg,
+        response_version_with_project = self.find_one_await_thumbnail(
             "Version",
             [["id", "is", self.version["id"]]],
             fields=["id", "code", "project.Project.image"],
-            thumbnail_field_name="project.Project.image"
+            thumbnail_field_name="project.Project.image",
         )
 
         if self.sg.server_caps.version and self.sg.server_caps.version >= (3, 3, 0):
@@ -534,12 +592,12 @@ class TestShotgunApi(base.LiveTestBase):
             # the thumbnail to finish processing.
             thumbnail_id = None
             attempts = 0
-            while attempts < THUMBNAIL_MAX_ATTEMPTS and thumbnail_id is None:
+            while attempts < base.THUMBNAIL_MAX_ATTEMPTS and thumbnail_id is None:
                 try:
                     thumbnail_id = self.sg.share_thumbnail(*args, **kwargs)
                     attempts += 1
                 except shotgun_api3.ShotgunError:
-                    time.sleep(THUMBNAIL_RETRY_INTERAL)
+                    time.sleep(base.THUMBNAIL_RETRY_INTERVAL)
             return thumbnail_id
 
         this_dir, _ = os.path.split(__file__)
@@ -547,17 +605,15 @@ class TestShotgunApi(base.LiveTestBase):
 
         # upload thumbnail to first entity and share it with the rest
         share_thumbnail_retry([self.version, self.shot], thumbnail_path=path)
-        response_version_thumbnail = find_one_await_thumbnail(
-            self.sg,
+        response_version_thumbnail = self.find_one_await_thumbnail(
             'Version',
             [['id', 'is', self.version['id']]],
-            fields=['id', 'code', 'image']
+            fields=['id', 'code', 'image'],
         )
-        response_shot_thumbnail = find_one_await_thumbnail(
-            self.sg,
+        response_shot_thumbnail = self.find_one_await_thumbnail(
             'Shot',
             [['id', 'is', self.shot['id']]],
-            fields=['id', 'code', 'image']
+            fields=['id', 'code', 'image'],
         )
 
         shot_url = urllib.parse.urlparse(response_shot_thumbnail.get('image'))
@@ -569,23 +625,20 @@ class TestShotgunApi(base.LiveTestBase):
         # share thumbnail from source entity with entities
         self.sg.upload_thumbnail("Version", self.version['id'], path)
         share_thumbnail_retry([self.asset, self.shot], source_entity=self.version)
-        response_version_thumbnail = find_one_await_thumbnail(
-            self.sg,
+        response_version_thumbnail = self.find_one_await_thumbnail(
             'Version',
             [['id', 'is', self.version['id']]],
-            fields=['id', 'code', 'image']
+            fields=['id', 'code', 'image'],
         )
-        response_shot_thumbnail = find_one_await_thumbnail(
-            self.sg,
+        response_shot_thumbnail = self.find_one_await_thumbnail(
             'Shot',
             [['id', 'is', self.shot['id']]],
-            fields=['id', 'code', 'image']
+            fields=['id', 'code', 'image'],
         )
-        response_asset_thumbnail = find_one_await_thumbnail(
-            self.sg,
+        response_asset_thumbnail = self.find_one_await_thumbnail(
             'Asset',
             [['id', 'is', self.asset['id']]],
-            fields=['id', 'code', 'image']
+            fields=['id', 'code', 'image'],
         )
 
         shot_url = urllib.parse.urlparse(response_shot_thumbnail.get('image'))
@@ -757,9 +810,8 @@ class TestShotgunApi(base.LiveTestBase):
     def test_ensure_ascii(self):
         '''test_ensure_ascii tests ensure_unicode flag.'''
         sg_ascii = shotgun_api3.Shotgun(self.config.server_url,
-                                        self.config.script_name,
-                                        self.config.api_key,
-                                        ensure_ascii=True)
+                                        ensure_ascii=True,
+                                        **self.auth_args)
 
         result = sg_ascii.find_one('Note', [['id', 'is', self.note['id']]], fields=['content'])
         if six.PY2:
@@ -769,9 +821,8 @@ class TestShotgunApi(base.LiveTestBase):
     def test_ensure_unicode(self):
         '''test_ensure_unicode tests ensure_unicode flag.'''
         sg_unicode = shotgun_api3.Shotgun(self.config.server_url,
-                                          self.config.script_name,
-                                          self.config.api_key,
-                                          ensure_ascii=False)
+                                          ensure_ascii=False,
+                                          **self.auth_args)
         result = sg_unicode.find_one('Note', [['id', 'is', self.note['id']]], fields=['content'])
         self.assertTrue(_has_unicode(result))
 
@@ -794,7 +845,6 @@ class TestShotgunApi(base.LiveTestBase):
         # in the 'YYYY-MM-DD' string format.
         self.assertRaises(shotgun_api3.ShotgunError, self.sg.work_schedule_read,
                           start_date_obj, end_date_obj, project, user)
-
 
         resp = self.sg.work_schedule_update('2012-01-02', False, 'Studio Holiday')
         expected = {
@@ -844,11 +894,8 @@ class TestShotgunApi(base.LiveTestBase):
         work_schedule['2012-01-04'] = {"reason": "USER_EXCEPTION", "working": False, "description": "Artist Holiday"}
         self.assertEqual(work_schedule, resp)
 
-    # For now disable tests that are erroneously failling on some sites to
-    # allow CI to pass until the known issue causing this is resolved.
     # test_preferences_read fails when preferences don't match the expected
     # preferences.
-    @base.skip("Skip test_preferences_read because preferences on test sites are mismatched.")
     def test_preferences_read(self):
         # Only run the tests on a server with the feature.
         if not self.sg.server_caps.version or self.sg.server_caps.version < (7, 10, 0):
@@ -873,8 +920,9 @@ class TestShotgunApi(base.LiveTestBase):
             'format_number_fields': '1,000',
             'format_time_hour_fields': '12 hour',
             'hours_per_day': 8.0,
-            'last_day_work_week': None,
-            'support_local_storage': True
+            'support_local_storage': True,
+            'enable_rv_integration': True,
+            'enable_shotgun_review_for_rv': False,
         }
         # Simply make sure viewmaster settings are there. These change frequently and we
         # don't want to have the test break because Viewmaster changed or because we didn't
@@ -947,6 +995,8 @@ class TestDataTypes(base.LiveTestBase):
         self.assertEqual(expected, actual)
 
     def test_set_date_time(self):
+        if self.config.jenkins:
+            self.skipTest("Jenkins. locked_until not updating.")
         entity = 'HumanUser'
         entity_id = self.human_user['id']
         field_name = 'locked_until'
@@ -1006,8 +1056,7 @@ class TestDataTypes(base.LiveTestBase):
 
     def test_set_multi_entity(self):
         sg = shotgun_api3.Shotgun(self.config.server_url,
-                                  self.config.script_name,
-                                  self.config.api_key)
+                                  **self.auth_args)
         keys = ['project', 'user', 'code']
         data = {'project': self.project,
                 'user': self.human_user,
@@ -1141,20 +1190,22 @@ class TestUtc(base.LiveTestBase):
         self.datetime_none = datetime.datetime(2008, 10, 13, 23, 10)
 
     def test_convert_to_utc(self):
+        if self.config.jenkins:
+            self.skipTest("Jenkins. locked_until not updating.")
         sg_utc = shotgun_api3.Shotgun(self.config.server_url,
-                                      self.config.script_name,
-                                      self.config.api_key,
                                       http_proxy=self.config.http_proxy,
-                                      convert_datetimes_to_utc=True)
+                                      convert_datetimes_to_utc=True,
+                                      **self.auth_args)
         self._assert_expected(sg_utc, self.datetime_none, self.datetime_local)
         self._assert_expected(sg_utc, self.datetime_local, self.datetime_local)
 
     def test_no_convert_to_utc(self):
+        if self.config.jenkins:
+            self.skipTest("Jenkins. locked_until not updating.")
         sg_no_utc = shotgun_api3.Shotgun(self.config.server_url,
-                                         self.config.script_name,
-                                         self.config.api_key,
                                          http_proxy=self.config.http_proxy,
-                                         convert_datetimes_to_utc=False)
+                                         convert_datetimes_to_utc=False,
+                                         **self.auth_args)
         self._assert_expected(sg_no_utc, self.datetime_none, self.datetime_none)
         self._assert_expected(sg_no_utc, self.datetime_utc, self.datetime_none)
 
@@ -1462,30 +1513,30 @@ class TestFind(base.LiveTestBase):
         """
         Test that 'in' relation using commas (old format) works with list fields.
         """
-        filters = [['sg_priority', 'in', self.ticket['sg_priority'], '1'],
+        filters = [['frame_count', 'in', self.version['frame_count'], 33],
                    ['project', 'is', self.project]]
 
-        result = self._id_in_result('Ticket', filters, self.ticket['id'])
+        result = self._id_in_result('Version', filters, self.version['id'])
         self.assertTrue(result)
 
     def test_in_relation_list_list(self):
         """
         Test that 'in' relation using list (new format) works with list fields.
         """
-        filters = [['sg_priority', 'in', [self.ticket['sg_priority'], '1']],
+        filters = [['frame_count', 'in', [self.version['frame_count'], 33]],
                    ['project', 'is', self.project]]
 
-        result = self._id_in_result('Ticket', filters, self.ticket['id'])
+        result = self._id_in_result('Version', filters, self.version['id'])
         self.assertTrue(result)
 
     def test_not_in_relation_list(self):
         """
         Test that 'not_in' relation using commas (old format) works with list fields.
         """
-        filters = [['sg_priority', 'not_in', [self.ticket['sg_priority'], '1']],
+        filters = [['frame_count', 'not_in', [self.version['frame_count'], 33]],
                    ['project', 'is', self.project]]
 
-        result = self._id_in_result('Ticket', filters, self.ticket['id'])
+        result = self._id_in_result('Version', filters, self.version['id'])
         self.assertFalse(result)
 
     def test_in_relation_comma_multi_entity(self):
@@ -1790,6 +1841,10 @@ class TestFollow(base.LiveTestBase):
 
 
 class TestErrors(base.TestBase):
+    def setUp(self):
+        auth_mode = "HumanUser" if self.config.jenkins else "ApiUser"
+        super(TestErrors, self).setUp(auth_mode)
+
     def test_bad_auth(self):
         '''test_bad_auth invalid script name or api key raises fault'''
         server_url = self.config.server_url
@@ -1838,6 +1893,100 @@ class TestErrors(base.TestBase):
         response.reason = 'reason'
         mock_request.return_value = (response, {})
         self.assertRaises(shotgun_api3.ProtocolError, self.sg.find_one, 'Shot', [])
+
+    @patch('shotgun_api3.shotgun.Http.request')
+    def test_make_call_retry(self, mock_request):
+        response = MagicMock(name="response mock", spec=dict)
+        response.status = 200
+        response.reason = 'reason'
+        mock_request.return_value = (response, {})
+
+        bak_rpc_attempt_interval = self.sg.config.rpc_attempt_interval
+        self.sg.config.rpc_attempt_interval = 0
+        try:
+            # First: make the request raise a consistent exception
+            mock_request.side_effect = Exception("not working")
+            with self.assertLogs(
+                'shotgun_api3', level='DEBUG'
+            ) as cm1, self.assertRaises(
+                Exception
+            ) as cm2:
+                self.sg.info()
+
+            self.assertEqual(cm2.exception.args[0], "not working")
+            log_content = "\n".join(cm1.output)
+            for i in [1,2]:
+                self.assertIn(
+                    f"Request failed, attempt {i} of 3.  Retrying",
+                    log_content,
+                )
+            self.assertIn(
+                "Request failed.  Giving up after 3 attempts.",
+                log_content,
+            )
+
+            # Then, make the exception happening only once and prove the
+            # retry works
+            def my_side_effect(*args, **kwargs):
+                try:
+                    if my_side_effect.counter<1:
+                        raise Exception("not working")
+
+                    return mock.DEFAULT
+                finally:
+                    my_side_effect.counter += 1
+
+            my_side_effect.counter = 0
+            mock_request.side_effect = my_side_effect
+            with self.assertLogs('shotgun_api3', level='DEBUG') as cm:
+                self.assertIsInstance(
+                    self.sg.info(),
+                    dict,
+                )
+
+            log_content = "\n".join(cm.output)
+            self.assertIn(
+                "Request failed, attempt 1 of 3.  Retrying",
+                log_content,
+            )
+            self.assertNotIn(
+                "Request failed, attempt 2 of 3.  Retrying",
+                log_content,
+            )
+
+            # Last: raise a SSLEOFError exception - SG-34910
+            def my_side_effect2(*args, **kwargs):
+                try:
+                    if my_side_effect2.counter<1:
+                        raise ssl.SSLEOFError(
+                            "EOF occurred in violation of protocol (_ssl.c:2426)"
+                        )
+
+                    return mock.DEFAULT
+                finally:
+                    my_side_effect2.counter += 1
+
+            my_side_effect2.counter = 0
+            mock_request.side_effect = my_side_effect2
+
+            with self.assertLogs('shotgun_api3', level='DEBUG') as cm:
+                self.assertIsInstance(
+                    self.sg.info(),
+                    dict,
+                )
+
+            log_content = "\n".join(cm.output)
+            self.assertIn("SSLEOFError", log_content)
+            self.assertIn(
+                "Request failed, attempt 1 of 3.  Retrying",
+                log_content,
+            )
+            self.assertNotIn(
+                "Request failed, attempt 2 of 3.  Retrying",
+                log_content,
+            )
+        finally:
+            self.sg.config.rpc_attempt_interval = bak_rpc_attempt_interval
 
     @patch('shotgun_api3.shotgun.Http.request')
     def test_sha2_error(self, mock_request):
@@ -1922,7 +2071,7 @@ class TestErrors(base.TestBase):
             # Try to upload a bogus file
             self.sg.upload('Note', 1234, thumbnail_path)
         except shotgun_api3.ShotgunError as e:
-            self.assertFalse(self.api_key in str(e))
+            self.assertFalse(str(self.api_key) in str(e))
             return
 
         # You should never get here... Otherwise some mocking failed and the
@@ -1957,7 +2106,7 @@ class TestErrors(base.TestBase):
 
 class TestScriptUserSudoAuth(base.LiveTestBase):
     def setUp(self):
-        super(TestScriptUserSudoAuth, self).setUp('ApiUser')
+        super(TestScriptUserSudoAuth, self).setUp()
 
         self.sg.update(
             'HumanUser',
@@ -1974,10 +2123,9 @@ class TestScriptUserSudoAuth(base.LiveTestBase):
             return
 
         x = shotgun_api3.Shotgun(self.config.server_url,
-                                 self.config.script_name,
-                                 self.config.api_key,
                                  http_proxy=self.config.http_proxy,
-                                 sudo_as_login=self.config.human_login)
+                                 sudo_as_login=self.config.human_login,
+                                 **self.auth_args)
 
         data = {
             'project': self.project,
@@ -2004,6 +2152,8 @@ class TestHumanUserSudoAuth(base.TestBase):
         Test 'sudo_as_login' option for HumanUser.
         Request fails on server because user has no permission to Sudo.
         """
+        if self.config.jenkins:
+            self.skipTest("Jenkins. locked_until not updating.")
 
         if not self.sg.server_caps.version or self.sg.server_caps.version < (5, 3, 12):
             return
@@ -2060,7 +2210,10 @@ class TestHumanUserAuth(base.HumanUserAuthLiveTestBase):
         self.assertTrue(isinstance(thumb_id, int))
 
         # check result on version
-        version_with_thumbnail = find_one_await_thumbnail(self.sg, 'Version', [['id', 'is', self.version['id']]])
+        version_with_thumbnail = self.find_one_await_thumbnail(
+            "Version",
+            [["id", "is", self.version["id"]]],
+        )
 
         self.assertEqual(version_with_thumbnail.get('type'), 'Version')
         self.assertEqual(version_with_thumbnail.get('id'), self.version['id'])
@@ -2117,7 +2270,10 @@ class TestSessionTokenAuth(base.SessionTokenAuthLiveTestBase):
             self.assertTrue(isinstance(thumb_id, int))
 
             # check result on version
-            version_with_thumbnail = find_one_await_thumbnail(self.sg, 'Version', [['id', 'is', self.version['id']]])
+            version_with_thumbnail = self.find_one_await_thumbnail(
+                "Version",
+                [["id", "is", self.version["id"]]],
+            )
 
             self.assertEqual(version_with_thumbnail.get('type'), 'Version')
             self.assertEqual(version_with_thumbnail.get('id'), self.version['id'])
@@ -2183,10 +2339,9 @@ class TestProjectLastAccessedByCurrentUser(base.LiveTestBase):
             return
 
         sg = shotgun_api3.Shotgun(self.config.server_url,
-                                  self.config.script_name,
-                                  self.config.api_key,
                                   http_proxy=self.config.http_proxy,
-                                  sudo_as_login=self.config.human_login)
+                                  sudo_as_login=self.config.human_login,
+                                  **self.auth_args)
 
         initial = sg.find_one('Project', [['id', 'is', self.project['id']]], ['last_accessed_by_current_user'])
         time.sleep(1)
@@ -2333,6 +2488,13 @@ class TestNoteThreadRead(base.LiveTestBase):
         note_data = self.sg.find_one("Note",
                                      [["id", "is", note_id]],
                                      list(expected_fields))
+        # remove images before comparison
+        if (
+            "created_by.HumanUser.image" in note_data
+            and "created_by.HumanUser.image" in data
+        ):
+            note_data.pop("created_by.HumanUser.image")
+            data.pop("created_by.HumanUser.image")
         self.assertEqual(note_data, data)
 
     def _check_reply(self, data, reply_id, additional_fields):
@@ -2363,6 +2525,10 @@ class TestNoteThreadRead(base.LiveTestBase):
                                            [["id", "is", attachment_id]],
                                            list(expected_fields))
 
+        # remove images before comparison
+        if "this_file" in attachment_data and "this_file" in data:
+            attachment_data["this_file"].pop("url")
+            data["this_file"].pop("url")
         self.assertEqual(attachment_data, data)
 
     # For now skip tests that are erroneously failling on some sites to
@@ -2375,6 +2541,8 @@ class TestNoteThreadRead(base.LiveTestBase):
         if not self.sg.server_caps.version or self.sg.server_caps.version < (6, 2, 0):
             return
 
+        user_entity = "HumanUser" if self.config.jenkins else "ApiUser"
+
         # create note
         note = self.sg.create("Note", {"content": "Test!", "project": self.project})
 
@@ -2385,21 +2553,21 @@ class TestNoteThreadRead(base.LiveTestBase):
 
         d = self.sg.find_one("Note",
                              [["id", "is", note["id"]]],
-                             ["created_by", "created_by.ApiUser.image"])
+                             ["created_by", f"created_by.{user_entity}.image"])
 
-        current_thumbnail = d["created_by.ApiUser.image"]
+        current_thumbnail = d[f"created_by.{user_entity}.image"]
 
         if current_thumbnail is None:
             # upload thumbnail
-            self.sg.upload_thumbnail("ApiUser",
+            self.sg.upload_thumbnail(user_entity,
                                      d["created_by"]["id"],
                                      self._thumbnail_path)
 
             d = self.sg.find_one("Note",
                                  [["id", "is", note["id"]]],
-                                 ["created_by", "created_by.ApiUser.image"])
+                                 ["created_by", f"created_by.{user_entity}.image"])
 
-            current_thumbnail = d["created_by.ApiUser.image"]
+            current_thumbnail = d[f"created_by.{user_entity}.image"]
 
         # get thread
         result = self.sg.note_thread_read(note["id"])
@@ -2863,16 +3031,6 @@ def _get_path(url):
         return url[2]
     else:
         return url.path
-
-
-def find_one_await_thumbnail(sg, entity_type, filters, fields=["image"], thumbnail_field_name="image", **kwargs):
-    attempts = 0
-    result = sg.find_one(entity_type, filters, fields=fields, **kwargs)
-    while attempts < THUMBNAIL_MAX_ATTEMPTS and TRANSIENT_IMAGE_PATH in result.get(thumbnail_field_name):
-        time.sleep(THUMBNAIL_RETRY_INTERAL)
-        result = sg.find_one(entity_type, filters, fields=fields, **kwargs)
-        attempts += 1
-    return result
 
 
 if __name__ == '__main__':
